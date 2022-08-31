@@ -1,38 +1,87 @@
-from collections import namedtuple
-import altair as alt
-import math
-import pandas as pd
+
+
 import streamlit as st
+import pandas as pd
+from PIL import Image
+import subprocess
+import os
+import base64
+import pickle
 
-"""
-# Welcome to Streamlit!
+# Molecular descriptor calculator
+def desc_calc():
+    # Performs the descriptor calculation
+    bashCommand = "java -Xms2G -Xmx2G -Djava.awt.headless=true -jar ./PaDEL-Descriptor/PaDEL-Descriptor.jar -removesalt -standardizenitro -fingerprints -descriptortypes ./PaDEL-Descriptor/PubchemFingerprinter.xml -dir ./ -file descriptors_output.csv"
+    process = subprocess.Popen(bashCommand.split(), stdout=subprocess.PIPE)
+    output, error = process.communicate()
+    os.remove('molecule.smi')
 
-Edit `/streamlit_app.py` to customize this app to your heart's desire :heart:
+# File download
+def filedownload(df):
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()  # strings <-> bytes conversions
+    href = f'<a href="data:file/csv;base64,{b64}" download="prediction.csv">Download Predictions</a>'
+    return href
 
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
+# Model building
+def build_model(input_data):
+    # Reads in saved regression model
+    load_model = pickle.load(open('NPS_model.pkl', 'rb'))
+    # Apply model to make predictions
+    prediction = load_model.predict(input_data)
+    st.header('**Prediction output**')
+    prediction_output = pd.Series(prediction, name='pIC50')
+    molecule_name = pd.Series(load_data[1], name='molecule_name')
+    df = pd.concat([molecule_name, prediction_output], axis=1)
+    st.write(df)
+    st.markdown(filedownload(df), unsafe_allow_html=True)
 
-In the meantime, below is an example of what you can do with just a few lines of code:
-"""
+    # Logo image
+    image = Image.open('logo.png')
 
+    st.image(image, use_column_width=True)
 
-with st.echo(code_location='below'):
-    total_points = st.slider("Number of points in spiral", 1, 5000, 2000)
-    num_turns = st.slider("Number of turns in spiral", 1, 100, 9)
+    # Page title
+    st.markdown("""
+    # Bioactivity Prediction App (Acetylcholinesterase)
+    This app allows you to predict the bioactivity towards inhibting the `Acetylcholinesterase` enzyme. `Acetylcholinesterase` is a drug target for Alzheimer's disease.
+    **Credits**
+    - App built in `Python` + `Streamlit` by [Chanin Nantasenamat](https://medium.com/@chanin.nantasenamat) (aka [Data Professor](http://youtube.com/dataprofessor))
+    - Descriptor calculated using [PaDEL-Descriptor](http://www.yapcwsoft.com/dd/padeldescriptor/) [[Read the Paper]](https://doi.org/10.1002/jcc.21707).
+    ---
+    """)
 
-    Point = namedtuple('Point', 'x y')
-    data = []
+    # Sidebar
+    with st.sidebar.header('1. Upload your CSV data'):
+        uploaded_file = st.sidebar.file_uploader("Upload your input file", type=['txt'])
+        st.sidebar.markdown("""
+    [Example input file](https://raw.githubusercontent.com/dataprofessor/bioactivity-prediction-app/main/example_acetylcholinesterase.txt)
+    """)
 
-    points_per_turn = total_points / num_turns
+    if st.sidebar.button('Predict'):
+        load_data = pd.read_table(uploaded_file, sep=' ', header=None)
+        load_data.to_csv('molecule.smi', sep='\t', header=False, index=False)
 
-    for curr_point_num in range(total_points):
-        curr_turn, i = divmod(curr_point_num, points_per_turn)
-        angle = (curr_turn + 1) * 2 * math.pi * i / points_per_turn
-        radius = curr_point_num / total_points
-        x = radius * math.cos(angle)
-        y = radius * math.sin(angle)
-        data.append(Point(x, y))
+        st.header('**Original input data**')
+        st.write(load_data)
 
-    st.altair_chart(alt.Chart(pd.DataFrame(data), height=500, width=500)
-        .mark_circle(color='#0068c9', opacity=0.5)
-        .encode(x='x:Q', y='y:Q'))
+        with st.spinner("Calculating descriptors..."):
+            desc_calc()
+
+        # Read in calculated descriptors and display the dataframe
+        st.header('**Calculated molecular descriptors**')
+        desc = pd.read_csv('descriptors_output.csv')
+        st.write(desc)
+        st.write(desc.shape)
+
+        # Read descriptor list used in previously built model
+        st.header('**Subset of descriptors from previously built models**')
+        Xlist = list(pd.read_csv('descriptor_list.csv').columns)
+        desc_subset = desc[Xlist]
+        st.write(desc_subset)
+        st.write(desc_subset.shape)
+
+        # Apply trained model to make prediction on query compounds
+        build_model(desc_subset)
+    else:
+        st.info('Upload input data in the sidebar to start!')
